@@ -1,0 +1,241 @@
+INCLUDE "stage_d.inc";
+INCLUDE "pc_d.inc";
+INCLUDE "ram_d.inc";
+INCLUDE "reg_d.inc";
+INCLUDE "alu_d.inc";
+
+SUBDESIGN cpu_d
+(
+	clk, reset, run : INPUT;
+	address_out[7..0] : OUTPUT;
+	data_out[7..0] : OUTPUT;
+	ira_out[7..0], irb_out[7..0] : OUTPUT;
+	data2ira_out, data2irb_out, irb2ad_out : OUTPUT;
+	wait, fetcha, fetchb, execa, execb : OUTPUT;
+)
+VARIABLE
+	stage : stage_d;
+	pc    : pc_d;
+	ram   : ram_d;
+	reg   : reg_d;
+	alu   : alu_d;
+	address[7..0] : NODE;
+	data[7..0]    : NODE;
+	ira[7..0], irb[7..0] : DFFE;
+	pc2ad, irb2ad, data2pc, data2ira : NODE;
+	data2irb, data2rc, data2ram, irb2data : NODE;
+	ram2data, ra2data, alu2data : NODE;
+BEGIN
+	DEFAULTS
+	pc2ad = GND;
+	irb2ad = GND;
+	data2pc = GND;
+	data2ira = GND;
+	data2irb = GND;
+	data2rc = GND;
+	data2ram = GND;
+	irb2data = GND;
+	ram2data = GND;
+	ra2data = GND;
+	alu2data = GND;
+	END DEFAULTS;
+	
+	-- date-tensou --
+	address[] = (irb[].q & irb2ad);
+	
+	pc.load = data2pc;
+	pc.in[] = (data[] & data2pc);	
+	
+	ira[].ena = data2ira;
+	ira[].d = (data[] & data2ira);
+	ira_out[] = ira[].q;
+	
+	irb[].ena = data2irb;
+	irb[].d = (data[] & data2irb);
+	irb_out[] = irb[].q;
+	
+	reg.c_load = data2rc;
+	reg.c_in[] = (data[] & data2rc);
+	
+	ram.rden = ram2data;
+	ram.wren = data2ram;
+	ram.data[] = (data[] & data2ram);
+	
+	data[] = (irb[].q & irb2data);
+	
+	data[] = (ram.q[] & ram2data);
+	
+	data[] = (reg.a_out[] & ra2data);
+	
+	data[] = (alu.s_out[] & alu2data);
+	
+	-- stage --
+	stage.(clk, reset, run) = (clk, reset, run);
+	(wait, fetcha, fetchb, execa, execb) = stage.(wait, fetcha, fetchb, execa, execb);
+	
+	-- pc --
+	pc.(clk, reset) = (clk, reset);
+	pc.inc = fetcha # fetchb;
+	address[] = (pc.out[] & pc2ad);
+	
+	-- ram --
+	ram.clock = clk;
+	ram.address[] = address[];
+	
+	-- reg --
+	reg.(clk, reset) = (!clk, reset);
+	
+	-- alu --
+	alu.(clk, reset) = (!clk, reset);
+	
+	ira[].(clk, clrn) = (!clk, !reset);
+	irb[].(clk, clrn) = (!clk, !reset);
+	
+	data2ira_out = data2ira;
+	data2irb_out = data2irb;
+	
+	-- fetcha_s --
+	pc2ad = fetcha # fetchb;
+	ram2data = fetcha # fetchb;
+	data2ira = fetcha;
+	
+	-- fetchb_s --
+	data2irb = fetchb;
+	
+	irb2ad_out = irb2ad;
+	IF (execa == B"1")
+	THEN
+	
+	-- HLT --
+	IF ira[].q == B"00000000" THEN stage.halt = B"1";
+
+	-- LD --
+	ELSIF ira[7..3].q == B"00001"
+	THEN irb2ad = B"1";
+		 ram2data = B"1";
+		 reg.c_sel[] = ira[2..0].q;
+		 data2rc = B"1";
+	
+	-- ST --
+	ELSIF ira[7..3].q == B"00010"
+	THEN irb2ad = B"1";
+		 reg.a_sel[] = ira[2..0].q;
+		 ra2data = B"1";
+		 data2ram = B"1";
+		 
+	-- JC --
+	ELSIF ira[].q == B"00100000"
+	THEN irb2data = alu.cflag;
+		 data2pc = alu.cflag;
+		 
+	-- JNC --
+	ELSIF ira[].q == B"00100001"
+	THEN irb2data = !alu.cflag;
+	     data2pc = !alu.cflag;
+	     
+	-- JZ --
+	ELSIF ira[].q == B"00100010"
+	THEN irb2data = alu.zflag;
+		 data2pc = alu.zflag;
+		 
+	-- JNZ --
+	ELSIF ira[].q == B"00100011"
+	THEN irb2data = !alu.zflag;
+	     data2pc = !alu.zflag;
+	     
+	-- JMP --
+	ELSIF ira[].q == B"00111111"
+	THEN irb2data = B"1";
+		 data2pc = B"1";
+		 
+	-- INC --
+	ELSIF ira[7..3].q == B"10000"
+	THEN reg.c_sel[] = ira[2..0].q;
+	     reg.a_sel[] = irb[7..5].q;
+	     alu.ena = B"1";
+		 alu.a_in[] = reg.a_out[];
+		 alu.ctrl[] = B"000";
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- DEC --
+	ELSIF ira[7..3].q == B"10001"
+	THEN alu.ctrl[] = B"001";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- ADD --
+	ELSIF ira[7..3].q == B"10010"
+	THEN alu.ctrl[] = B"010";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 reg.b_sel[] = irb[4..2].q;
+		 alu.b_in[] = reg.b_out[];
+		 reg.c_sel[] = ira[2..0].q;
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- SUB --
+	ELSIF ira[7..3].q == B"10011"
+	THEN alu.ctrl[] = B"011";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 reg.b_sel[] = irb[4..2].q;
+		 alu.b_in[] = reg.b_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- CMP --
+	ELSIF ira[7..3].q == B"10100"
+	THEN alu.ctrl[] = B"100";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 reg.b_sel[] = irb[4..2].q;
+		 alu.b_in[] = reg.b_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- AND --
+	ELSIF ira[7..3].q == B"10101"
+	THEN alu.ctrl[] = B"101";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 reg.b_sel[] = irb[4..2].q;
+		 alu.b_in[] = reg.b_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	-- XOR --
+	ELSIF ira[7..3].q == B"10110"
+	THEN alu.ctrl[] = B"110";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 reg.b_sel[] = irb[4..2].q;
+		 alu.b_in[] = reg.b_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+	
+	-- SIFT --
+	ELSIF ira[7..3].q == B"10111"
+	THEN alu.ctrl[] = B"111";
+		 alu.ena = B"1";
+		 reg.a_sel[] = irb[7..5].q;
+		 alu.a_in[] = reg.a_out[];
+		 alu2data = B"1";
+		 data2rc = B"1";
+		 
+	END IF;
+	END IF;
+	
+	address_out[] = address[];
+	data_out[] = data[];
+	
+END;
